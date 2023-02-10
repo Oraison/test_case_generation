@@ -1,4 +1,4 @@
-number of data : 1000002
+number of data : 1,000,002
 data example : 
 {
     "language": "cpp",
@@ -17,4 +17,4 @@ data example :
 }
 
 data code types :
-{'cpp': 387066, 'java': 199728, 'python3': 348040, 'python': 65168}
+{'cpp': 387,066, 'java': 199,728, 'python3': 348,040, 'python': 65,168}
