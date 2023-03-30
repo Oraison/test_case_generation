@@ -1,0 +1,7 @@
+## data와 output은 제외
+data/
+output/
+
+## csv와 jsonl은 데이터 파일이므로 제외
+*.csv
+*.jsonl

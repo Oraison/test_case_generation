@@ -1,9 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[3]:
-
-
 import os
 import numpy as np
 import pandas as pd
@@ -17,66 +11,24 @@ from transformers import RobertaTokenizer, T5ForConditionalGeneration
 import json
 from tqdm.notebook import tqdm
 
-
-# In[4]:
-
-
 from torch import cuda
 device = 'cuda:0'
-
-
-# In[5]:
-
-
-def load_data(path,tokenizer):
-    sources=[]
-    targets=[]
-    
-    with open(f'data/{path}.jsonl', encoding="utf-8") as f:
-        for idx, line in enumerate(f):
-            line = line.strip()
-            obj=json.loads(line)
-            source=obj['description']+tokenizer.sep_token+obj['solutions']
-            
-            for t in obj['test_cases']:
-                sources.append(source)
-                targets.append(t+tokenizer.eos_token)
-            for t in obj['private_tests']:
-                sources.append(source)
-                targets.append(t+tokenizer.eos_token)
-            if idx>50000:
-                break
-
-    df=pd.DataFrame()
-    df['source']=sources
-    df['target']=targets
-    return df
-
-
-# In[6]:
-
+#device = 'cpu'
 
 model_params = {
     "MODEL": "Salesforce/codet5-base",  # model_type: t5-base/t5-large
-    "TRAIN_BATCH_SIZE": 32,  # training batch size
-    "VALID_BATCH_SIZE": 32,  # validation batch size
-    "TRAIN_EPOCHS": 10,  # number of training epochs
+    "TRAIN_BATCH_SIZE": 16,  # training batch size
+    "VALID_BATCH_SIZE": 16,  # validation batch size
+    # "TRAIN_EPOCHS": 10,  # number of training epochs\
+    "TRAIN_EPOCHS" : 10,
     "VAL_EPOCHS": 1,  # number of validation epochs
     "LEARNING_RATE": 1e-4,  # learning rate
     "MAX_SOURCE_TEXT_LENGTH": 512,  # max length of source text
-    "MAX_TARGET_TEXT_LENGTH": 50,  # max length of target text
+    "MAX_TARGET_TEXT_LENGTH": 64,  # max length of target text
     "SEED": 42,  # set seed for reproducibility
 }
 
-
-# In[7]:
-
-
 tokenizer = RobertaTokenizer.from_pretrained(model_params["MODEL"])
-
-
-# In[8]:
-
 
 class YourDataSetClass(Dataset):
     """
@@ -151,9 +103,65 @@ class YourDataSetClass(Dataset):
             "target_ids_y": target_ids.to(dtype=torch.long),
         }
 
+def load_data(path,tokenizer):
+    '''
+    with open(f'data/{path}.jsonl', encoding="utf-8") as f:
+        for idx, line in enumerate(f):
+            line = line.strip()
+            obj=json.loads(line)
+            # source=obj['description']+tokenizer.sep_token+obj['solutions']
+            source = obj['solutions']
+            
+            for t in obj['test_cases']:
+                sources.append(source)
+                targets.append(t+tokenizer.eos_token)
+            for t in obj['private_tests']:
+                sources.append(source)
+                targets.append(t+tokenizer.eos_token)
+            if idx>50000:
+                break
+    '''
+    
+    sources=[]
+    targets=[]
+    
+    with open(f'data/{path}.jsonl', encoding='utf-8') as f:
+        for idx, line in enumerate(f):
+            # line_num += 1
+            # if idx > 2500: break
+            obj = json.loads(line)
+            # print((obj.keys()))
+            input_spec = obj['spec']
+            
+            source = obj['code'] + tokenizer.sep_token + input_spec
+            if len(source) > model_params['MAX_SOURCE_TEXT_LENGTH']: continue
 
-# In[9]:
+            for test_case in obj['test_case_inputs']:
+                if len(test_case) > model_params['MAX_TARGET_TEXT_LENGTH'] or len(test_case) < 1: continue
+                sources.append(source)
+                targets.append(test_case + tokenizer.eos_token)
+            '''
+            for test_case in obj['public_tests']['test_case_inputs']:
+                if len(test_case) > model_params['MAX_TARGET_TEXT_LENGTH'] or len(test_case) < 1: continue
+                sources.append(source)
+                targets.append(test_case + tokenizer.eos_token)
+            
+            for test_case in obj['private_tests']['input']:
+                if len(test_case) > model_params['MAX_TARGET_TEXT_LENGTH'] or len(test_case) < 1: continue
+                sources.append(source)
+                targets.append(test_case + tokenizer.eos_token)
+            '''
+            # targets.append(obj['public_tests']['input'][0]+tokenizer.eos_token)
 
+    df=pd.DataFrame()
+    df['source']=sources
+    df['target']=targets
+    
+    # df = df.sample(frac=0.025, random_state=model_params['SEED'])
+
+    print(len(df['source']))
+
+    return df
 
 def train(epoch, tokenizer, model, device, loader, optimizer):
     print(epoch, "th train start")
@@ -164,7 +172,9 @@ def train(epoch, tokenizer, model, device, loader, optimizer):
 
     model.train()
     total_loss = 0
-    for i, data in enumerate(loader, 0):
+    # curr_loss = 99
+    for i, data in enumerate(loader, 1):
+        # print(i)
         y = data["target_ids"].to(device, dtype=torch.long)
         y_ids = y[:, :-1].contiguous()
         lm_labels = y[:, 1:].clone().detach()
@@ -178,62 +188,65 @@ def train(epoch, tokenizer, model, device, loader, optimizer):
             labels=lm_labels,
         )
         loss = outputs[0]
-        if i % 50==0:
-            aver_loss = total_loss / 50
-            total_loss = 0
-            print( int(i/50), ': ', aver_loss)
         total_loss += loss.item()
+        if i % 1000 == 0:
+            aver_loss = total_loss / 1000
+            total_loss = 0
+            print('{:7}: {}'.format(int(i/1000), aver_loss))
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
     print(epoch, "th train end")
 
-
-# In[ ]:
-
-
 def validate(epoch, tokenizer, model, device, loader):
-  print("validate start")
-  """
-  Function to evaluate model for predictions
+    print("validate start")
+    """
+    Function to evaluate model for predictions
 
-  """
-  model.eval()
-  predictions = []
-  actuals = []
-  sources = []
-  with torch.no_grad():
-      for _, data in enumerate(loader, 0):
-          y = data['target_ids'].to(device, dtype = torch.long)
-          ids = data['source_ids'].to(device, dtype = torch.long)
-          mask = data['source_mask'].to(device, dtype = torch.long)
+    """
+    model.eval()
+    predictions = []
+    actuals = []
+    sources = []
+    with torch.no_grad():
+        loss = 0
+        for idx, data in enumerate(loader, 1):
+            y = data['target_ids'].to(device, dtype = torch.long)
+            ids = data['source_ids'].to(device, dtype = torch.long)
+            mask = data['source_mask'].to(device, dtype = torch.long)
 
-          generated_ids = model.generate(
-              input_ids = ids,
-              attention_mask = mask, 
-              max_length=150, 
-              num_beams=2,
-              repetition_penalty=2.5, 
-              length_penalty=1.0, 
-              early_stopping=True
-              )
-           
-          preds = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True) for g in generated_ids]
-          target = [tokenizer.decode(t, skip_special_tokens=True, clean_up_tokenization_spaces=True)for t in y]
-          source = [tokenizer.decode(i, skip_special_tokens=True, clean_up_tokenization_spaces=True) for i in ids]
-          sources.extend(source)
-          predictions.extend(preds)
-          actuals.extend(target)
-  print("validate end")
-  return predictions, actuals,sources
+            generated_ids = model.generate(
+                input_ids = ids,
+                attention_mask = mask, 
+                max_length=150, 
+                num_beams=5,
+                repetition_penalty=2.5, 
+                length_penalty=1.0, 
+                early_stopping=True
+                )
+            
+            # loss += model(input_ids=ids, attention_mask=mask, labels=y).loss
 
+            # if idx == 1: print(type(generated_ids))
 
-# In[11]:
+            # if idx % 1000 == 0:
+            #     print("{:10} prediction loss: {}".format(int(idx/1000), loss/1000))
+            #     loss = 0
 
+            
+            preds = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True) for g in generated_ids]
+            target = [tokenizer.decode(t, skip_special_tokens=True, clean_up_tokenization_spaces=True)for t in y]
+            source = [tokenizer.decode(i, skip_special_tokens=True, clean_up_tokenization_spaces=True) for i in ids]
+            sources.extend(source)
+            predictions.extend(preds)
+            actuals.extend(target)
+    print("validate end")
+    return predictions, actuals, sources
 
 def T5Trainer(
-      output_dir="./outputs/"
+      output_dir="./outputs/", save_model_name = 'incorrect_spec_model_files'
+
 ):
 
     """
@@ -257,7 +270,7 @@ def T5Trainer(
 
     # Importing the raw dataset
     # dataframe = dataframe[[source_text, target_text]]
-    dataframe = load_data('seq_data2',tokenizer)
+    dataframe = load_data('incorrect_pair',tokenizer)
     source_text='source'
     target_text='target'
     # Creation of Dataset and Dataloader
@@ -313,7 +326,7 @@ def T5Trainer(
         final_df = pd.DataFrame({"Generated Text": predictions, "Actual Text": actuals,"Source Text":sources})
         final_df.to_csv(os.path.join(output_dir, f"predictions_train{epoch}.csv"))
     # Saving the model after training
-        path = os.path.join(output_dir, f"model_files{epoch}")
+        path = os.path.join(output_dir, f"{save_model_name}{epoch}")
         model.save_pretrained(path)
         tokenizer.save_pretrained(path)
         
@@ -321,15 +334,5 @@ def T5Trainer(
         # final_df = pd.DataFrame({"Generated Text": predictions, "Actual Text": actuals})
         # final_df.to_csv(os.path.join(output_dir, f"predictions_valid{epoch}.csv"))
 
-
-# In[12]:
-
-
-T5Trainer()
-
-
-# In[ ]:
-
-
-
-
+if __name__ == '__main__':
+    T5Trainer()
